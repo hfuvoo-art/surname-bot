@@ -40,6 +40,12 @@ SCHEMA = [
         name  TEXT
     )
     """,
+    # Помощники: люди, которым админ разрешил менять баллы другим
+    """
+    CREATE TABLE IF NOT EXISTS editors (
+        tg_id BIGINT PRIMARY KEY
+    )
+    """,
 ]
 
 _conn: psycopg.Connection | None = None
@@ -170,6 +176,24 @@ def reset_scores() -> None:
         "sort_key = %s::double precision + id / 1000.0",
         (time.time(),),
     )
+
+
+def is_editor(tg_id: int) -> bool:
+    return _exec("SELECT 1 AS x FROM editors WHERE tg_id = %s", (tg_id,), "one") is not None
+
+
+def toggle_editor(tg_id: int) -> bool:
+    """Выдать доступ или забрать. Возвращает True, если теперь доступ есть."""
+    if is_editor(tg_id):
+        _exec("DELETE FROM editors WHERE tg_id = %s", (tg_id,))
+        return False
+    _exec("INSERT INTO editors (tg_id) VALUES (%s) ON CONFLICT DO NOTHING", (tg_id,))
+    return True
+
+
+def get_editor_ids() -> set[int]:
+    rows = _exec("SELECT tg_id FROM editors", fetch="all")
+    return {r["tg_id"] for r in rows}
 
 
 def clear_people() -> None:
