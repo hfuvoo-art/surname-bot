@@ -1,0 +1,4 @@
+fastapi
+aiogram>=3.13
+psycopg[binary]>=3.2
+tzdata
