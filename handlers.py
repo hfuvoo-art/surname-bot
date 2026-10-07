@@ -87,8 +87,8 @@ def build_keyboard() -> InlineKeyboardMarkup | None:
 
 
 LIST_TEXT = (
-    f"Нажми на человека: +{fmt_score(POINTS_PER_CLICK)} балла, "
-    "и он уйдет вниз.\n"
+    f"Нажми на себя: +{fmt_score(POINTS_PER_CLICK)} балла, "
+    "и ты уйдешь вниз. Чужие кнопки нажимают только админ и его помощники.\n"
     "На кнопке: имя · баллы · когда нажимали в последний раз.\n"
     "Сверху те, у кого баллов меньше.\n"
     "Список обновляется сам."
@@ -209,8 +209,8 @@ def help_text(user_id: int) -> str:
     )
     if is_admin(user_id):
         text += (
-            f"\n\nДля админа есть кнопка «{BTN_ADMIN}»: убрать человека, "
-            "обнулить баллы, удалить список.\n"
+            f"\n\nДля админа есть кнопка «{BTN_ADMIN}»: выдать помощникам доступ "
+            "к чужим баллам, убрать человека, обнулить баллы, удалить список.\n"
             "Или командами: /remove Иван Иванов, /reset, /clear"
         )
     return text
@@ -301,6 +301,7 @@ async def cmd_id(message: Message) -> None:
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Помощники (кто может менять баллы)", callback_data="adm:helpers")],
             [InlineKeyboardButton(text="Убрать человека", callback_data="adm:remove")],
             [InlineKeyboardButton(text="Обнулить баллы", callback_data="adm:reset")],
             [InlineKeyboardButton(text="Удалить весь список", callback_data="adm:clear")],
@@ -331,6 +332,27 @@ def remove_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def helpers_kb() -> InlineKeyboardMarkup:
+    ids = storage.get_editor_ids()
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=("✅ " if p["tg_id"] in ids else "▫️ ") + p["name"],
+                callback_data=f"adm:help:{p['id']}",
+            )
+        ]
+        for p in storage.get_people()
+    ]
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="adm:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+HELPERS_TEXT = (
+    "Помощники могут нажимать на любого человека и давать ему баллы.\n"
+    "✅ доступ есть, ▫️ доступа нет. Нажми на имя, чтобы выдать или забрать."
+)
+
+
 @router.message(F.text == BTN_ADMIN)
 async def btn_admin(message: Message) -> None:
     if not is_admin(message.from_user.id):
@@ -354,6 +376,18 @@ async def on_admin(call: CallbackQuery) -> None:
     answered = False
     if action == "menu":
         text, kb = "Меню админа:", admin_menu_kb()
+    elif action == "helpers":
+        if not storage.get_people():
+            return await call.answer("Список пустой.", show_alert=True)
+        text, kb = HELPERS_TEXT, helpers_kb()
+    elif action == "help":
+        row = next((p for p in storage.get_people() if p["id"] == int(parts[2])), None)
+        if not row:
+            return await call.answer("Уже нет в списке.", show_alert=True)
+        now = storage.toggle_editor(row["tg_id"])
+        await call.answer("Доступ выдан." if now else "Доступ забран.")
+        answered = True
+        text, kb = HELPERS_TEXT, helpers_kb()
     elif action == "remove":
         if not storage.get_people():
             return await call.answer("Список пустой.", show_alert=True)
@@ -446,6 +480,11 @@ async def on_refresh(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("hit:"))
 async def on_hit(call: CallbackQuery) -> None:
     person_id = int(call.data.split(":", 1)[1])
+    me = storage.get_person(call.from_user.id)
+    uid = call.from_user.id
+    if not (is_admin(uid) or storage.is_editor(uid) or (me and me["id"] == person_id)):
+        await call.answer("Баллы можно давать только себе.", show_alert=True)
+        return
     if storage.give_points(person_id, POINTS_PER_CLICK):
         await call.answer(f"+{fmt_score(POINTS_PER_CLICK)}")
     else:
