@@ -158,6 +158,34 @@ def give_points(person_id: int, points: float) -> bool:
     )
 
 
+def change_points(person_id: int, delta: float) -> str:
+    """Меняет баллы на delta. Возвращает ok, low (ушли бы ниже нуля) или gone."""
+    now = time.time()
+    n = _exec(
+        "UPDATE people SET score = score + %s, sort_key = %s, clicked_at = %s "
+        "WHERE id = %s AND score + %s >= 0",
+        (delta, now, now, person_id, delta),
+    )
+    if n > 0:
+        return "ok"
+    return "low" if get_person_by_id(person_id) else "gone"
+
+
+def set_score(person_id: int, score: float) -> bool:
+    now = time.time()
+    return (
+        _exec(
+            "UPDATE people SET score = %s, sort_key = %s, clicked_at = %s WHERE id = %s",
+            (score, now, now, person_id),
+        )
+        > 0
+    )
+
+
+def get_person_by_id(person_id: int):
+    return _exec("SELECT * FROM people WHERE id = %s", (person_id,), "one")
+
+
 def remove_person(name: str) -> bool:
     # Сравниваем в Python, чтобы регистр букв не мешал
     for row in _exec("SELECT id, name FROM people", fetch="all"):
