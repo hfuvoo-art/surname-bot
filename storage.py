@@ -40,6 +40,13 @@ SCHEMA = [
         name  TEXT
     )
     """,
+    # Кого бот назвал «следующим к доске»: запоминаем, пока он остается среди самых малобалльных
+    """
+    CREATE TABLE IF NOT EXISTS next_pick (
+        slot      INT PRIMARY KEY,
+        person_id BIGINT NOT NULL
+    )
+    """,
     # Помощники: люди, которым админ разрешил менять баллы другим
     """
     CREATE TABLE IF NOT EXISTS editors (
@@ -199,6 +206,7 @@ def remove_person_by_id(person_id: int) -> bool:
 
 
 def reset_scores() -> None:
+    clear_next_pick()
     _exec(
         "UPDATE people SET score = 0, clicked_at = NULL, "
         "sort_key = %s::double precision + id / 1000.0",
@@ -224,7 +232,25 @@ def get_editor_ids() -> set[int]:
     return {r["tg_id"] for r in rows}
 
 
+def get_next_pick() -> int | None:
+    row = _exec("SELECT person_id FROM next_pick WHERE slot = 1", fetch="one")
+    return row["person_id"] if row else None
+
+
+def set_next_pick(person_id: int) -> None:
+    _exec(
+        "INSERT INTO next_pick (slot, person_id) VALUES (1, %s) "
+        "ON CONFLICT (slot) DO UPDATE SET person_id = EXCLUDED.person_id",
+        (person_id,),
+    )
+
+
+def clear_next_pick() -> None:
+    _exec("DELETE FROM next_pick")
+
+
 def clear_people() -> None:
+    clear_next_pick()
     _exec("DELETE FROM people")
 
 
