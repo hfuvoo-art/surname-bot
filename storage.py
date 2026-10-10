@@ -47,6 +47,14 @@ SCHEMA = [
         person_id BIGINT NOT NULL
     )
     """,
+    # Кто отказался выходить к доске в этом круге (сбрасывается, когда меняются баллы)
+    """
+    CREATE TABLE IF NOT EXISTS next_skip (
+        person_id BIGINT PRIMARY KEY
+    )
+    """,
+    # Какую задачу человек выбрал: hard (сложная) или easy (легкая)
+    "ALTER TABLE people ADD COLUMN IF NOT EXISTS task TEXT",
     # Помощники: люди, которым админ разрешил менять баллы другим
     """
     CREATE TABLE IF NOT EXISTS editors (
@@ -92,6 +100,7 @@ def _get_conn() -> psycopg.Connection:
                 except (
                     psycopg.errors.DuplicateTable,
                     psycopg.errors.UniqueViolation,
+                    psycopg.errors.DuplicateColumn,
                 ):
                     pass  # другой запуск успел создать таблицу первым
             _schema_ready = True
@@ -129,7 +138,7 @@ def get_person(tg_id: int):
 
 def get_people() -> list[dict]:
     return _exec(
-        "SELECT id, tg_id, name, score, clicked_at FROM people "
+        "SELECT id, tg_id, name, score, clicked_at, task FROM people "
         "ORDER BY score ASC, sort_key ASC, id ASC",
         fetch="all",
     )
@@ -168,6 +177,7 @@ def give_points(person_id: int, points: float) -> bool:
 def change_points(person_id: int, delta: float) -> str:
     """Меняет баллы на delta. Возвращает ok, low (ушли бы ниже нуля) или gone."""
     now = time.time()
+    clear_skips()
     n = _exec(
         "UPDATE people SET score = score + %s, sort_key = %s, clicked_at = %s "
         "WHERE id = %s AND score + %s >= 0",
@@ -180,6 +190,7 @@ def change_points(person_id: int, delta: float) -> str:
 
 def set_score(person_id: int, score: float) -> bool:
     now = time.time()
+    clear_skips()
     return (
         _exec(
             "UPDATE people SET score = %s, sort_key = %s, clicked_at = %s WHERE id = %s",
@@ -187,6 +198,10 @@ def set_score(person_id: int, score: float) -> bool:
         )
         > 0
     )
+
+
+def set_task(tg_id: int, task: str | None) -> bool:
+    return _exec("UPDATE people SET task = %s WHERE tg_id = %s", (task, tg_id)) > 0
 
 
 def get_person_by_id(person_id: int):
@@ -207,6 +222,7 @@ def remove_person_by_id(person_id: int) -> bool:
 
 def reset_scores() -> None:
     clear_next_pick()
+    clear_skips()
     _exec(
         "UPDATE people SET score = 0, clicked_at = NULL, "
         "sort_key = %s::double precision + id / 1000.0",
@@ -232,6 +248,18 @@ def get_editor_ids() -> set[int]:
     return {r["tg_id"] for r in rows}
 
 
+def get_skipped() -> set[int]:
+    return {r["person_id"] for r in _exec("SELECT person_id FROM next_skip", fetch="all")}
+
+
+def add_skip(person_id: int) -> None:
+    _exec("INSERT INTO next_skip (person_id) VALUES (%s) ON CONFLICT DO NOTHING", (person_id,))
+
+
+def clear_skips() -> None:
+    _exec("DELETE FROM next_skip")
+
+
 def get_next_pick() -> int | None:
     row = _exec("SELECT person_id FROM next_pick WHERE slot = 1", fetch="one")
     return row["person_id"] if row else None
@@ -251,6 +279,7 @@ def clear_next_pick() -> None:
 
 def clear_people() -> None:
     clear_next_pick()
+    clear_skips()
     _exec("DELETE FROM people")
 
 
