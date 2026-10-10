@@ -12,6 +12,7 @@
 import asyncio
 import logging
 import os
+import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -49,6 +50,7 @@ BTN_ME = "Мой балл"
 BTN_HELP = "Помощь"
 BTN_REGISTER = "Регистрация"
 BTN_ADMIN = "Админ-меню"
+BTN_NEXT = "🎯 Кто следующий"
 BTN_ADD_ME = "➕ Добавить себе"
 BTN_SUB_ME = "➖ Отнять у себя"
 BTN_ADD_OTHER = "➕ Добавить другому"
@@ -117,12 +119,13 @@ def main_menu(user_id: int) -> ReplyKeyboardMarkup:
             )
         rows += [
             [KeyboardButton(text=BTN_LIST), KeyboardButton(text=BTN_ME)],
-            [KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_NEXT), KeyboardButton(text=BTN_HELP)],
         ]
     else:
         rows = [
             [KeyboardButton(text=BTN_REGISTER)],
-            [KeyboardButton(text=BTN_LIST), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_LIST), KeyboardButton(text=BTN_NEXT)],
+            [KeyboardButton(text=BTN_HELP)],
         ]
     if is_admin(user_id):
         rows.append([KeyboardButton(text=BTN_ADMIN)])
@@ -215,6 +218,8 @@ def help_text(user_id: int) -> str:
         "Кнопки внизу:\n"
         f"{BTN_LIST} — показать список\n"
         f"{BTN_ME} — твое место и баллы\n"
+        f"{BTN_NEXT} — кто следующий к доске (у кого меньше всего баллов, "
+        "при равных выбирается случайно и запоминается, пока баллы не изменятся)\n"
         f"{BTN_HELP} — эта подсказка\n\n"
         "Команды: /start, /list, /me, /id"
     )
@@ -601,6 +606,25 @@ async def ask_for_other(message: Message, mode: str) -> None:
         return await message.answer("Некому менять баллы.")
     sign, verb = sign_word(mode)
     await message.answer(f"{verb} {sign}{STEP}. Выбери человека:", reply_markup=kb)
+
+
+@router.message(F.text == BTN_NEXT)
+async def btn_next(message: Message) -> None:
+    people = storage.get_people()
+    if not people:
+        return await message.answer(EMPTY_TEXT)
+    lowest = min(p["score"] for p in people)
+    tied = [p for p in people if p["score"] == lowest]
+    # если уже назвали кого-то из них и он все еще среди самых малобалльных, не меняем
+    saved = storage.get_next_pick()
+    chosen = next((p for p in tied if p["id"] == saved), None)
+    if chosen is None:
+        chosen = random.choice(tied)
+        storage.set_next_pick(chosen["id"])
+    text = f"К доске выходит: {chosen['name']}\nБаллов: {fmt_score(lowest)}"
+    if len(tied) > 1:
+        text += f"\nУ {len(tied)} человек поровну баллов, выбрал случайно."
+    await message.answer(text)
 
 
 @router.message(F.text == BTN_ADD_ME)
