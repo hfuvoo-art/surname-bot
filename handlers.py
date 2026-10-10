@@ -50,6 +50,7 @@ BTN_ME = "Мой балл"
 BTN_HELP = "Помощь"
 BTN_REGISTER = "Регистрация"
 BTN_ADMIN = "Админ-меню"
+BTN_TASK = "📝 Выбрать задачу"
 BTN_NEXT = "🎯 Кто следующий"
 BTN_ADD_ME = "➕ Добавить себе"
 BTN_SUB_ME = "➖ Отнять у себя"
@@ -72,6 +73,10 @@ def fmt_time(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, TZ).strftime("%d.%m %H:%M")
 
 
+TASK_ICON = {"hard": "🔥", "easy": "🌱"}
+TASK_NAME = {"hard": "сложная", "easy": "легкая"}
+
+
 def build_keyboard() -> InlineKeyboardMarkup | None:
     people = storage.get_people()
     if not people:
@@ -80,7 +85,8 @@ def build_keyboard() -> InlineKeyboardMarkup | None:
         [
             InlineKeyboardButton(
                 text=(
-                    f"{p['name']} · {fmt_score(p['score'])} · "
+                    f"{TASK_ICON.get(p['task'], '')} ".lstrip()
+                    + f"{p['name']} · {fmt_score(p['score'])} · "
                     f"{fmt_time(p['clicked_at'])}"
                 ),
                 callback_data=f"hit:{p['id']}",
@@ -95,6 +101,7 @@ def build_keyboard() -> InlineKeyboardMarkup | None:
 LIST_TEXT = (
     "Список людей с баллами.\n"
     "На кнопке: имя · баллы · когда меняли в последний раз.\n"
+    "🔥 сложную задачу хочет, 🌱 легкую.\n"
     "Сверху те, у кого баллов меньше.\n"
     "Баллы меняются кнопками внизу экрана. Список обновляется сам."
 )
@@ -119,7 +126,8 @@ def main_menu(user_id: int) -> ReplyKeyboardMarkup:
             )
         rows += [
             [KeyboardButton(text=BTN_LIST), KeyboardButton(text=BTN_ME)],
-            [KeyboardButton(text=BTN_NEXT), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_TASK), KeyboardButton(text=BTN_NEXT)],
+            [KeyboardButton(text=BTN_HELP)],
         ]
     else:
         rows = [
@@ -218,8 +226,10 @@ def help_text(user_id: int) -> str:
         "Кнопки внизу:\n"
         f"{BTN_LIST} — показать список\n"
         f"{BTN_ME} — твое место и баллы\n"
+        f"{BTN_TASK} — выбрать, какую задачу хочешь: сложную 🔥 или легкую 🌱 "
+        "(значок виден всем в списке)\n"
         f"{BTN_NEXT} — кто следующий к доске (у кого меньше всего баллов, "
-        "при равных выбирается случайно и запоминается, пока баллы не изменятся)\n"
+        "при равных выбирается случайно). Если человек не хочет, нажми «Не хочет выходить»\n"
         f"{BTN_HELP} — эта подсказка\n\n"
         "Команды: /start, /list, /me, /id"
     )
@@ -608,23 +618,113 @@ async def ask_for_other(message: Message, mode: str) -> None:
     await message.answer(f"{verb} {sign}{STEP}. Выбери человека:", reply_markup=kb)
 
 
-@router.message(F.text == BTN_NEXT)
-async def btn_next(message: Message) -> None:
+def pick_next() -> tuple[dict, int, bool] | None:
+    """Кто выходит к доске. Возвращает (человек, сколько с равными баллами, все ли отказались)."""
     people = storage.get_people()
     if not people:
-        return await message.answer(EMPTY_TEXT)
-    lowest = min(p["score"] for p in people)
-    tied = [p for p in people if p["score"] == lowest]
-    # если уже назвали кого-то из них и он все еще среди самых малобалльных, не меняем
+        return None
+    skipped = storage.get_skipped()
+    pool = [p for p in people if p["id"] not in skipped]
+    everyone_refused = False
+    if not pool:  # отказались все: начинаем круг заново
+        storage.clear_skips()
+        pool = people
+        everyone_refused = True
+    lowest = min(p["score"] for p in pool)
+    tied = [p for p in pool if p["score"] == lowest]
+    # если уже назвали кого-то из них и он все еще подходит, не меняем
     saved = storage.get_next_pick()
     chosen = next((p for p in tied if p["id"] == saved), None)
     if chosen is None:
         chosen = random.choice(tied)
         storage.set_next_pick(chosen["id"])
-    text = f"К доске выходит: {chosen['name']}\nБаллов: {fmt_score(lowest)}"
-    if len(tied) > 1:
-        text += f"\nУ {len(tied)} человек поровну баллов, выбрал случайно."
-    await message.answer(text)
+    return chosen, len(tied), everyone_refused
+
+
+def next_message() -> tuple[str, InlineKeyboardMarkup | None]:
+    picked = pick_next()
+    if picked is None:
+        return EMPTY_TEXT, None
+    chosen, tied_count, refused_all = picked
+    text = f"К доске выходит: {chosen['name']}\nБаллов: {fmt_score(chosen['score'])}"
+    if chosen.get("task"):
+        text += f"\nХочет задачу: {TASK_NAME[chosen['task']]} {TASK_ICON[chosen['task']]}"
+    if tied_count > 1:
+        text += f"\nУ {tied_count} человек поровну баллов, выбрал случайно."
+    if refused_all:
+        text += "\nОтказались все, начинаю круг заново."
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🙅 Не хочет выходить, выбрать другого",
+                    callback_data=f"nskip:{chosen['id']}",
+                )
+            ]
+        ]
+    )
+    return text, kb
+
+
+def task_kb(current: str | None) -> InlineKeyboardMarkup:
+    def mark(code: str, label: str) -> str:
+        return ("✓ " if current == code else "") + label
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=mark("hard", "🔥 Сложная"), callback_data="task:hard"),
+                InlineKeyboardButton(text=mark("easy", "🌱 Легкая"), callback_data="task:easy"),
+            ],
+            [InlineKeyboardButton(text="Убрать выбор", callback_data="task:none")],
+        ]
+    )
+
+
+@router.message(F.text == BTN_TASK)
+async def btn_task(message: Message) -> None:
+    me = storage.get_person(message.from_user.id)
+    if not me:
+        return await message.answer("Сначала зарегистрируйся: нажми «Регистрация».")
+    now = f"Сейчас: {TASK_NAME[me['task']]}." if me.get("task") else "Сейчас не выбрано."
+    await message.answer(
+        f"Какую задачу хочешь? {now}", reply_markup=task_kb(me.get("task"))
+    )
+
+
+@router.callback_query(F.data.startswith("task:"))
+async def on_task(call: CallbackQuery) -> None:
+    code = call.data.split(":", 1)[1]
+    task = code if code in TASK_NAME else None
+    if not storage.set_task(call.from_user.id, task):
+        return await call.answer("Сначала зарегистрируйся.", show_alert=True)
+    await call.answer("Записал: " + (TASK_NAME[task] if task else "выбор убран"))
+    now = f"Сейчас: {TASK_NAME[task]}." if task else "Сейчас не выбрано."
+    await edit_or_pass(call, f"Какую задачу хочешь? {now}", task_kb(task))
+    await push_to_all(call.bot)  # у всех в списке появится значок
+
+
+@router.message(F.text == BTN_NEXT)
+async def btn_next(message: Message) -> None:
+    text, kb = next_message()
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("nskip:"))
+async def on_next_skip(call: CallbackQuery) -> None:
+    person_id = int(call.data.split(":", 1)[1])
+    if not can_change(call.from_user.id, person_id):
+        return await call.answer(
+            "Отказаться может сам человек, админ или помощник.", show_alert=True
+        )
+    if storage.get_next_pick() == person_id:  # кнопка не устарела
+        storage.add_skip(person_id)
+        storage.clear_next_pick()
+        await call.answer("Хорошо, выбираю другого.")
+    else:
+        await call.answer("Уже выбран другой.")
+    text, kb = next_message()
+    await edit_or_pass(call, text, kb)
 
 
 @router.message(F.text == BTN_ADD_ME)
